@@ -1,332 +1,308 @@
 import tkinter as tk
-from tkinter import ttk
-import requests
+from tkinter import ttk, Toplevel, Listbox, END
+import time
 
-# -----------------------------------
-# Configuration
-# -----------------------------------
-API_URL = "https://api.semanticscholar.org/graph/v1"
-API_KEY = "YOUR_API_KEY_HERE"
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.common.exceptions import NoSuchElementException
 
-# Fields for the root paper (title, year, etc.)
-ROOT_FIELDS = "title,year"
+###################################################
+# Configure Selenium
+###################################################
+# Adjust these options/paths to match your system
+CHROME_DRIVER_PATH = "/path/to/chromedriver"
 
-# Fields for citing papers
-CITATION_FIELDS = "title,year,citations"
+chrome_options = Options()
+# Run headless if you want no visible browser
+# chrome_options.add_argument("--headless")
 
-# How many citations to load per call
-DEFAULT_PAGE_SIZE = 50
+###################################################
+# Google Scholar Scraping Helpers
+###################################################
+def init_driver():
+    """Initialize a Chrome WebDriver instance and return it."""
+    driver = webdriver.Chrome(executable_path=CHROME_DRIVER_PATH, options=chrome_options)
+    return driver
 
-# How many search results to show
-DEFAULT_SEARCH_LIMIT = 20
-
-# -----------------------------------
-# API Helper Functions
-# -----------------------------------
-def fetch_paper_info(paper_id, fields=ROOT_FIELDS):
+def search_google_scholar(query, driver, max_results=10):
     """
-    Fetch metadata for a single paper (e.g., title, year).
-    Returns a dict with keys like 'paperId', 'title', 'year', etc.
-    If there's an error, returns None.
+    Search for `query` on Google Scholar, parse the first page,
+    and return a list of dicts with 'title', 'link', 'cited_by_link'.
+    Only grabs up to `max_results`.
     """
-    # headers = {"x-api-key": API_KEY}
-    headers = { }
-    url = f"{API_URL}/paper/{paper_id}?fields={fields}"
-    try:
-        r = requests.get(url, headers=headers, timeout=10)
-        r.raise_for_status()
-        data = r.json()
-        return data
-    except requests.exceptions.RequestException as e:
-        print(f"Error fetching paper info: {e}")
-        return None
+    base_url = "https://scholar.google.com"
+    search_url = f"{base_url}/scholar?q={query.replace(' ', '+')}"
+    driver.get(search_url)
+    time.sleep(1.5)  # small delay to let the page load
 
-def get_forward_citations(paper_id, limit=DEFAULT_PAGE_SIZE, offset=0):
-    """
-    Fetch the papers that cite the given paper (forward citations).
-    Returns (citations_list, total_citations_count) or ([], 0) on error.
-    """
-    # headers = {"x-api-key": API_KEY}
-    headers = { }
-    url = (
-        f"{API_URL}/paper/{paper_id}"
-        f"?fields={CITATION_FIELDS}&limit={limit}&offset={offset}"
-    )
-    try:
-        r = requests.get(url, headers=headers, timeout=10)
-        r.raise_for_status()
-        data = r.json()
+    results = []
+    # The search results have a class 'gs_ri' for each item
+    entries = driver.find_elements(By.CSS_SELECTOR, ".gs_r .gs_ri")
+    
+    for entry in entries[:max_results]:
+        try:
+            title_elem = entry.find_element(By.CSS_SELECTOR, "h3 a")
+            title = title_elem.text.strip()
+            link = title_elem.get_attribute("href")
+        except NoSuchElementException:
+            # Couldn’t parse properly
+            continue
 
-        citations = data.get("citations", [])
-        total_citations = data.get("citationCount", len(citations))
-        return citations, total_citations
+        # Attempt to find the "Cited by X" link
+        cited_by_link = None
+        try:
+            cited_by_elem = entry.find_element(By.PARTIAL_LINK_TEXT, "Cited by")
+            cited_by_link = cited_by_elem.get_attribute("href")
+        except NoSuchElementException:
+            # Not found or no citations
+            pass
 
-    except requests.exceptions.RequestException as e:
-        print(f"Error fetching citations for {paper_id}: {e}")
-        return [], 0
+        results.append({
+            "title": title,
+            "link": link,
+            "cited_by_link": cited_by_link
+        })
 
-def search_papers(query, limit=DEFAULT_SEARCH_LIMIT, offset=0):
+    return results
+
+def get_citing_papers(cited_by_url, driver, max_results=10):
     """
-    Search for papers by a textual query using the /paper/search endpoint.
-    Returns a list of paper objects (each has 'paperId', 'title', 'year', etc.)
-    or an empty list if there's an error or no results.
+    Given a 'Cited by X' link, open it and parse the first page of citing papers.
+    Returns a list of dicts { "title": ..., "link": ..., "cited_by_link": ... }
     """
-    headers = {"x-api-key": API_KEY}
-    # fields we want to retrieve in the search results:
-    fields = "title,year"
-    url = (
-        f"{API_URL}/paper/search?"
-        f"query={query}&limit={limit}&offset={offset}&fields={fields}"
-    )
-    try:
-        r = requests.get(url, headers=headers, timeout=10)
-        r.raise_for_status()
-        data = r.json()
-        # data['data'] is a list of paper objects
-        papers = data.get("data", [])
-        return papers
-    except requests.exceptions.RequestException as e:
-        print(f"Error searching for papers: {e}")
+    if not cited_by_url:
         return []
 
-# -----------------------------------
-# Main Tkinter App
-# -----------------------------------
+    driver.get(cited_by_url)
+    time.sleep(1.5)
+
+    results = []
+    entries = driver.find_elements(By.CSS_SELECTOR, ".gs_r .gs_ri")
+
+    for entry in entries[:max_results]:
+        try:
+            title_elem = entry.find_element(By.CSS_SELECTOR, "h3 a")
+            title = title_elem.text.strip()
+            link = title_elem.get_attribute("href")
+        except NoSuchElementException:
+            continue
+
+        # Attempt to find the "Cited by X" link
+        cited_by_link = None
+        try:
+            cited_by_elem = entry.find_element(By.PARTIAL_LINK_TEXT, "Cited by")
+            cited_by_link = cited_by_elem.get_attribute("href")
+        except NoSuchElementException:
+            pass
+
+        results.append({
+            "title": title,
+            "link": link,
+            "cited_by_link": cited_by_link
+        })
+
+    return results
+
+###################################################
+# Tkinter Application
+###################################################
 class CitationExplorer(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Semantic Scholar Citation Explorer")
-        self.geometry("900x600")
+        self.title("Google Scholar Citation Explorer")
+        self.geometry("1000x600")
 
-        # Caches to avoid repeated calls for the same paper
+        # We use a single Selenium driver for the app’s lifetime
+        self.driver = init_driver()
+
+        # Cache: dict keyed by the “paper title or link”, storing the citing papers list
+        # so we don’t re-scrape if we expand the same node again.
         self.citations_cache = {}
 
-        # ----------------------------
-        # Control Frame (Top)
-        # ----------------------------
+        # ---------------------------
+        # Top frame: search controls
+        # ---------------------------
         control_frame = ttk.Frame(self)
         control_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
 
-        # Paper ID entry
-        ttk.Label(control_frame, text="Enter Paper ID/DOI/ArXiv:").pack(side=tk.LEFT, padx=5)
-        self.paper_id_var = tk.StringVar()
-        self.paper_id_entry = ttk.Entry(control_frame, textvariable=self.paper_id_var, width=50)
-        self.paper_id_entry.pack(side=tk.LEFT, padx=5)
-
-        # Load button
-        load_button = ttk.Button(control_frame, text="Load", command=self.load_root_paper)
-        load_button.pack(side=tk.LEFT, padx=5)
-
-        # OR: Search
-        search_label = ttk.Label(control_frame, text="Search Query:")
-        search_label.pack(side=tk.LEFT, padx=5)
-
+        ttk.Label(control_frame, text="Search Query:").pack(side=tk.LEFT, padx=5)
         self.search_var = tk.StringVar()
-        self.search_entry = ttk.Entry(control_frame, textvariable=self.search_var, width=30)
+        self.search_entry = ttk.Entry(control_frame, textvariable=self.search_var, width=50)
         self.search_entry.pack(side=tk.LEFT, padx=5)
 
-        search_button = ttk.Button(control_frame, text="Search", command=self.on_search_click)
+        search_button = ttk.Button(control_frame, text="Search", command=self.do_search)
         search_button.pack(side=tk.LEFT, padx=5)
 
         # Status label
-        self.status_var = tk.StringVar(value="Waiting for input...")
+        self.status_var = tk.StringVar(value="Enter a search query.")
         self.status_label = ttk.Label(control_frame, textvariable=self.status_var, foreground="blue")
         self.status_label.pack(side=tk.LEFT, padx=10)
 
-        # ----------------------------
-        # Treeview (Left)
-        # ----------------------------
-        self.tree = ttk.Treeview(self, columns=("title", "year"), selectmode="browse")
+        # ---------------------------
+        # Treeview for citations
+        # ---------------------------
+        self.tree = ttk.Treeview(self, columns=("title"), selectmode="browse")
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
-        # Scrollbar
         scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
         scrollbar.pack(side=tk.LEFT, fill=tk.Y)
         self.tree.configure(yscrollcommand=scrollbar.set)
 
-        # Define columns & headings
-        self.tree.heading("#0", text="Paper ID", anchor=tk.W)
+        self.tree.heading("#0", text="Paper / Link", anchor=tk.W)
         self.tree.heading("title", text="Title", anchor=tk.W)
-        self.tree.heading("year", text="Year", anchor=tk.CENTER)
 
-        self.tree.column("#0", width=220, stretch=False)
-        self.tree.column("title", width=500, stretch=True)
-        self.tree.column("year", width=60, stretch=False, anchor=tk.CENTER)
+        self.tree.column("#0", width=400, stretch=False)
+        self.tree.column("title", width=600, stretch=True)
 
-        # Bind double-click
+        # Bind double-click on the tree
         self.tree.bind("<Double-1>", self.on_tree_item_double_click)
 
-    # ----------------------------
-    # Core Citation Loading Logic
-    # ----------------------------
-    def load_root_paper(self, paper_id=None):
-        """
-        Clears the tree and loads the top-level (root) paper by ID.
-        If 'paper_id' is None, use whatever is in the self.paper_id_var.
-        Then fetch its forward citations.
-        """
-        if paper_id is None:
-            paper_id = self.paper_id_var.get().strip()
-
-        if not paper_id:
-            self.set_status("Please enter a valid paper ID/DOI/ArXiv or select from search.")
+    def do_search(self):
+        """Perform a Google Scholar search using the query in self.search_var."""
+        query = self.search_var.get().strip()
+        if not query:
+            self.set_status("Please enter a query.")
             return
 
-        # Clear existing tree & caches
+        self.set_status(f"Searching for: {query} ...")
+
+        # Launch a search in Google Scholar, parse results
+        results = search_google_scholar(query, self.driver, max_results=20)
+        if not results:
+            self.set_status("No results found or could not parse results.")
+            return
+
+        # Show a new pop-up with the search results
+        self.show_search_results_popup(results)
+        self.set_status(f"Found {len(results)} result(s). Select one to load its citations.")
+
+    def show_search_results_popup(self, results):
+        """
+        Show a Toplevel window listing all `results`.
+        When the user double-clicks an item, load that as root paper in the tree.
+        """
+        popup = Toplevel(self)
+        popup.title("Search Results")
+        popup.geometry("600x400")
+
+        listbox = Listbox(popup)
+        listbox.pack(fill=tk.BOTH, expand=True)
+
+        # Fill the listbox
+        for item in results:
+            listbox.insert(END, item["title"])
+
+        # On double-click, load the selected paper
+        def on_select(event):
+            selection = listbox.curselection()
+            if not selection:
+                return
+            index = selection[0]
+            paper = results[index]  # {title, link, cited_by_link}
+            popup.destroy()
+            self.load_root_paper(paper)
+
+        listbox.bind("<Double-1>", on_select)
+
+    def load_root_paper(self, paper):
+        """
+        Clears the tree and loads the 'paper' (dict) as the root paper.
+        Then, fetches its citations (i.e., the papers citing it).
+        """
         self.tree.delete(*self.tree.get_children())
         self.citations_cache.clear()
 
-        # Get the root paper’s metadata
-        self.set_status(f"Fetching metadata for {paper_id}...")
-        paper_info = fetch_paper_info(paper_id)
-        if not paper_info:
-            self.set_status("Failed to fetch the root paper. Check the ID or your connection.")
-            return
+        # Insert the root node
+        root_text = paper.get("link", "No Link")
+        root_title = paper.get("title", "No Title")
+        root_node = self.tree.insert("", tk.END, text=root_text, values=(root_title,), open=True)
 
-        # Create the root node
-        root_title = paper_info.get("title", "(Unknown Title)")
-        root_year = paper_info.get("year", "")
-        root_node = self.tree.insert(
-            "",
-            tk.END,
-            text=paper_id,  # paper ID in the leftmost column
-            values=(root_title, root_year),
-            open=True
-        )
-
-        # Preemptively fetch and attach its forward citations
-        self.expand_citations(root_node, paper_id)
-        self.set_status("Root paper loaded.")
+        # Expand citations for this root paper
+        self.expand_citations(root_node, paper)
+        self.set_status(f"Loaded root paper: {root_title}")
 
     def on_tree_item_double_click(self, event):
         """
-        Expand the citations for a node if not already expanded/cached.
+        When user double-clicks a node, expand its citations if not already expanded.
         """
         item_id = self.tree.focus()
         if not item_id:
             return
 
-        # If it already has children, we assume it's expanded.
-        children = self.tree.get_children(item_id)
-        if children:
-            self.set_status("Already expanded.")
+        # If it already has children, assume we've expanded it
+        if self.tree.get_children(item_id):
             return
 
-        paper_id = self.tree.item(item_id, "text")
-        self.expand_citations(item_id, paper_id)
+        link = self.tree.item(item_id, "text")
+        title = self.tree.item(item_id, "values")[0]
 
-    def expand_citations(self, parent_item_id, paper_id):
-        """
-        Fetch forward citations of `paper_id` (unless cached),
-        and insert them as children under `parent_item_id`.
-        """
-        # Check cache
-        if paper_id in self.citations_cache:
-            citations = self.citations_cache[paper_id]
+        # We'll store the paper in a dict to pass to expand_citations
+        # For the minimal approach, the "cited_by_link" can be found in our cache.
+        # We used the (link, title) as a key in the cache dictionary.
+        paper_key = (link, title)
+        if paper_key in self.citations_cache:
+            paper_dict = self.citations_cache[paper_key]
+            self.expand_citations(item_id, paper_dict)
         else:
-            self.set_status(f"Fetching citations for {paper_id}...")
-            citations, total = get_forward_citations(paper_id, limit=DEFAULT_PAGE_SIZE, offset=0)
-            self.citations_cache[paper_id] = citations  # store in cache
-
-        for c in citations:
-            child_id = c.get("paperId")
-            title = c.get("title", "Unknown Title")
-            year = c.get("year", "")
-
-            if not self._child_exists(parent_item_id, child_id):
-                self.tree.insert(parent_item_id, tk.END, text=child_id, values=(title, year))
-
-        self.set_status(f"Found {len(citations)} citing papers for {paper_id}.")
-
-    def _child_exists(self, parent_item_id, child_paper_id):
-        """
-        Check if a child with the given paperId is already present 
-        under the specified parent in the Treeview.
-        """
-        for child_id in self.tree.get_children(parent_item_id):
-            existing_text = self.tree.item(child_id, "text")
-            if existing_text == child_paper_id:
-                return True
-        return False
-
-    # ----------------------------
-    # Searching Logic
-    # ----------------------------
-    def on_search_click(self):
-        """
-        Called when the user presses the 'Search' button.
-        Opens a Toplevel with a list of matching papers for the user’s query.
-        """
-        query = self.search_var.get().strip()
-        if not query:
-            self.set_status("Please enter a search query.")
+            # If we don't have it cached, we can't easily get the "cited_by_link"
+            # (unless we had stored it originally). For a minimal approach,
+            # we do not handle this case well. A real app might keep track of it differently.
+            self.set_status("No 'Cited by' link found or not cached.")
             return
 
-        self.set_status(f"Searching for '{query}'...")
-        results = search_papers(query)
-        if not results:
-            self.set_status("No results found or error during search.")
-            return
-
-        self.set_status(f"Found {len(results)} results for '{query}'.")
-
-        # Show a pop-up window with the search results
-        self.show_search_results_window(query, results)
-
-    def show_search_results_window(self, query, results):
+    def expand_citations(self, parent_item_id, paper):
         """
-        Create a Toplevel window that displays the search results in a Treeview.
-        Allow the user to select a paper to load as the root paper.
+        Fetch the citing papers for `paper` if not already done,
+        insert them as children under the node `parent_item_id`.
         """
-        popup = tk.Toplevel(self)
-        popup.title(f"Search results for '{query}'")
+        # If we've already done it, skip
+        link = paper.get("link")
+        title = paper.get("title")
+        paper_key = (link, title)
 
-        # Treeview for search results
-        columns = ("title", "year")
-        search_tree = ttk.Treeview(popup, columns=columns, show="headings", selectmode="browse")
-        search_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # If we already stored "citing papers" in citations_cache[paper_key]["citing"],
+        # we skip re-scraping.
+        # Otherwise, scrape them now.
+        if "citing" not in paper:
+            cited_by_url = paper.get("cited_by_link")
+            if cited_by_url:
+                self.set_status(f"Fetching citations for: {title}")
+                citing_papers = get_citing_papers(cited_by_url, self.driver, max_results=10)
+                paper["citing"] = citing_papers
+            else:
+                paper["citing"] = []
 
-        # Scrollbar
-        sb = ttk.Scrollbar(popup, orient=tk.VERTICAL, command=search_tree.yview)
-        sb.pack(side=tk.LEFT, fill=tk.Y)
-        search_tree.configure(yscrollcommand=sb.set)
+            # Make sure we store it in our main cache
+            self.citations_cache[paper_key] = paper
+        else:
+            citing_papers = paper["citing"]
 
-        # Define columns
-        search_tree.heading("title", text="Title", anchor=tk.W)
-        search_tree.heading("year", text="Year", anchor=tk.CENTER)
+        # Insert each citing paper into the tree
+        for citing_paper in paper["citing"]:
+            child_link = citing_paper.get("link", "")
+            child_title = citing_paper.get("title", "")
+            child_id = self.tree.insert(
+                parent_item_id,
+                tk.END,
+                text=child_link,
+                values=(child_title,),
+            )
+            # Also cache this citing paper
+            child_key = (child_link, child_title)
+            if child_key not in self.citations_cache:
+                self.citations_cache[child_key] = citing_paper
 
-        search_tree.column("title", width=600, anchor=tk.W)
-        search_tree.column("year", width=60, anchor=tk.CENTER)
+        self.set_status(f"Found {len(paper['citing'])} citing papers for: {title}")
 
-        # Insert rows
-        for paper in results:
-            pid = paper.get("paperId", "")
-            title = paper.get("title", "(No title)")
-            year = paper.get("year", "")
-            search_tree.insert("", tk.END, values=(title, year), iid=pid)
-
-        # Double-click on a row to load that paper
-        def on_search_result_double_click(event):
-            item_id = search_tree.focus()
-            if not item_id:
-                return
-            # item_id here is the 'iid' we used: the paperId
-            paper_id = item_id  # which we set as the 'iid' in search_tree.insert()
-            # Load as root paper
-            self.paper_id_var.set(paper_id)
-            self.load_root_paper(paper_id)
-            popup.destroy()
-
-        search_tree.bind("<Double-1>", on_search_result_double_click)
-
-    # ----------------------------
-    # Utility
-    # ----------------------------
-    def set_status(self, message):
-        """Update status label text."""
-        self.status_var.set(message)
+    def set_status(self, msg):
+        self.status_var.set(msg)
+        self.update_idletasks()
 
 
 if __name__ == "__main__":
     app = CitationExplorer()
     app.mainloop()
+
+    # When you close the app, optionally quit the driver:
+    app.driver.quit()

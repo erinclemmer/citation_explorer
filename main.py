@@ -53,14 +53,12 @@ def init_driver():
 def search_google_scholar(query, driver, max_results=10, page_url=None):
     """
     Searches or loads a page on Google Scholar, returns a list of dicts:
-      { "title", "link", "cited_by_link", "is_next_page", "next_page_url" }
-    Possibly includes a "Load Next Page >>" item at the end if there's a "Next" link.
+      { "title", "cited_by_link", "num_citations", "is_next_page", "next_page_url" }
     """
     base_url = "https://scholar.google.com"
     if page_url:
         driver.get(page_url)
     else:
-        # new search
         url = f"{base_url}/scholar?q={query.replace(' ', '+')}"
         driver.get(url)
 
@@ -73,27 +71,29 @@ def search_google_scholar(query, driver, max_results=10, page_url=None):
         try:
             title_elem = entry.find_element(By.CSS_SELECTOR, "h3 a")
             title = title_elem.text.strip()
-            link = title_elem.get_attribute("href")
         except NoSuchElementException:
             continue
 
         cited_by_link = None
+        num_citations = 0  # Default if not found
         try:
             cited_by_elem = entry.find_element(By.PARTIAL_LINK_TEXT, "Cited by")
             cited_by_link = cited_by_elem.get_attribute("href")
+            num_citations_text = cited_by_elem.text.split("Cited by")[-1].strip()
+            num_citations = int(num_citations_text) if num_citations_text.isdigit() else 0
         except NoSuchElementException:
             pass
 
         results.append({
             "title": title,
-            "link": link,
             "cited_by_link": cited_by_link,
+            "num_citations": num_citations,
             "is_next_page": False,
             "next_page_url": None,
-            "children": []  # We'll store child nodes here for JSON saving
+            "children": []
         })
 
-    # If there's a Next link, add a special item
+    # Check for next page
     next_page_url = None
     try:
         next_button = driver.find_element(By.LINK_TEXT, "Next")
@@ -104,8 +104,8 @@ def search_google_scholar(query, driver, max_results=10, page_url=None):
     if next_page_url:
         results.append({
             "title": "Load Next Page >>",
-            "link": None,
             "cited_by_link": None,
+            "num_citations": None,
             "is_next_page": True,
             "next_page_url": next_page_url,
             "children": []
@@ -115,47 +115,44 @@ def search_google_scholar(query, driver, max_results=10, page_url=None):
 
 def get_citing_papers(cited_by_url, driver, max_results=10, page_url=None):
     """
-    Given a 'Cited by' URL or a next-page URL, scrape the citing papers from
-    that page. Returns a list of dicts (similar structure to search_google_scholar()).
+    Scrapes citing papers from a page given a 'Cited by' URL or next-page URL.
     """
     if not cited_by_url and not page_url:
         return []
 
-    if page_url:
-        driver.get(page_url)
-    else:
-        driver.get(cited_by_url)
-
+    driver.get(page_url if page_url else cited_by_url)
     time.sleep(1.5)
 
     results = []
     entries = driver.find_elements(By.CSS_SELECTOR, ".gs_r .gs_ri")
-    
+
     for entry in entries[:max_results]:
         try:
             title_elem = entry.find_element(By.CSS_SELECTOR, "h3 a")
             title = title_elem.text.strip()
-            link = title_elem.get_attribute("href")
         except NoSuchElementException:
             continue
 
         cited_by_link = None
+        num_citations = 0  # Default if not found
         try:
             cited_by_elem = entry.find_element(By.PARTIAL_LINK_TEXT, "Cited by")
             cited_by_link = cited_by_elem.get_attribute("href")
+            num_citations_text = cited_by_elem.text.split("Cited by")[-1].strip()
+            num_citations = int(num_citations_text) if num_citations_text.isdigit() else 0
         except NoSuchElementException:
             pass
 
         results.append({
             "title": title,
-            "link": link,
             "cited_by_link": cited_by_link,
+            "num_citations": num_citations,
             "is_next_page": False,
             "next_page_url": None,
             "children": []
         })
 
-    # Next link?
+    # Check for next page
     next_page_url = None
     try:
         next_button = driver.find_element(By.LINK_TEXT, "Next")
@@ -166,8 +163,8 @@ def get_citing_papers(cited_by_url, driver, max_results=10, page_url=None):
     if next_page_url:
         results.append({
             "title": "Load Next Page >>",
-            "link": None,
             "cited_by_link": None,
+            "num_citations": None,
             "is_next_page": True,
             "next_page_url": next_page_url,
             "children": []
@@ -268,18 +265,20 @@ class CitationExplorer(tk.Tk):
         self.set_status("Tree reset successfully.")
 
     def build_tree(self):
-        self.tree = ttk.Treeview(self, columns=("title",), selectmode="browse")
+        self.tree = ttk.Treeview(self, columns=("title", "num_citations"), selectmode="browse")
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
         scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
         scrollbar.pack(side=tk.LEFT, fill=tk.Y)
         self.tree.configure(yscrollcommand=scrollbar.set)
 
-        self.tree.heading("#0", text="Paper Link / Special", anchor=tk.W)
+        self.tree.heading("#0", text="Special", anchor=tk.W)
         self.tree.heading("title", text="Title", anchor=tk.W)
+        self.tree.heading("num_citations", text="Number of Citations", anchor=tk.W)
 
-        self.tree.column("#0", width=450, stretch=False)
+        self.tree.column("#0", width=150, stretch=False)
         self.tree.column("title", width=600, stretch=True)
+        self.tree.column("num_citations", width=150, stretch=False)
 
         # Double-click expand
         self.tree.bind("<Double-1>", self.on_tree_item_double_click)
@@ -433,10 +432,11 @@ class CitationExplorer(tk.Tk):
         Recursively insert 'paper' (dict) into the TreeView under 'parent_item_id'.
         Also store in citations_cache, then handle its children.
         """
-        text = "[NEXT PAGE]" if paper["is_next_page"] else (paper["link"] or "")
-        val = "Load Next Page >>" if paper["is_next_page"] else (paper["title"] or "")
+        text = "[NEXT PAGE]" if paper["is_next_page"] else ""
+        val = paper.get("title", "")
+        num_citations = paper.get("num_citations", "N/A")
 
-        node_id = self.tree.insert(parent_item_id, tk.END, text=text, values=(val,), open=False)
+        node_id = self.tree.insert(parent_item_id, tk.END, text=text, values=(val, num_citations), open=False)
 
         # Store in cache
         key = (text, val)
@@ -644,8 +644,7 @@ class CitationExplorer(tk.Tk):
 
     def expand_citations(self, parent_item_id, paper):
         """
-        If paper has no 'children', fetch them from 'cited_by_link'.
-        Insert them into the tree.
+        If paper has no 'children', fetch them from 'cited_by_link' and add to the tree.
         """
         if not paper.get("children"):
             cb_link = paper.get("cited_by_link")
@@ -667,10 +666,11 @@ class CitationExplorer(tk.Tk):
         Insert a child node for c_paper under parent_item_id, store it in the cache.
         """
         is_next = c_paper.get("is_next_page", False)
-        text = "[NEXT PAGE]" if is_next else (c_paper.get("link") or "")
-        val = "Load Next Page >>" if is_next else (c_paper.get("title") or "")
+        text = "[NEXT PAGE]" if is_next else ""
+        val = c_paper.get("title", "")
+        num_citations = c_paper.get("num_citations", "N/A")
 
-        child_id = self.tree.insert(parent_item_id, tk.END, text=text, values=(val,), open=False)
+        child_id = self.tree.insert(parent_item_id, tk.END, text=text, values=(val, num_citations), open=False)
 
         # Store in cache
         self.citations_cache[(text, val)] = c_paper

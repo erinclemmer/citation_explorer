@@ -1,0 +1,5 @@
+// Add "delete save" button
+Load drive path from json file
+Save search tree
+Remove url column
+Make text larger

@@ -11,10 +11,30 @@ from selenium.common.exceptions import NoSuchElementException
 from selenium.webdriver.firefox.options import Options as FirefoxOptions
 from selenium.webdriver.firefox.service import Service as FirefoxService
 
+
+###################################################
+# Load Firefox Driver Path from JSON Config
+###################################################
+CONFIG_FILE = "config.json"
+
+def load_config():
+    """Load configuration from a JSON file."""
+    try:
+        with open(CONFIG_FILE, "r") as file:
+            return json.load(file)
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Configuration file '{CONFIG_FILE}' not found.")
+    except json.JSONDecodeError as e:
+        raise ValueError(f"Error parsing '{CONFIG_FILE}': {e}")
+
+config = load_config()
+FIREFOX_DRIVER_PATH = config.get("firefox_driver_path")
+if not FIREFOX_DRIVER_PATH:
+    raise ValueError("Missing 'firefox_driver_path' in configuration file.")
+
 ###################################################
 # Configure Selenium for Firefox
 ###################################################
-FIREFOX_DRIVER_PATH = "C:\\Users\\alice\\Documents\\programs\\geckodriver.exe"
 
 firefox_options = FirefoxOptions()
 # If you want headless mode (invisible browser):

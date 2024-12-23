@@ -195,9 +195,20 @@ class CitationExplorer(tk.Tk):
         save_button = ttk.Button(control_frame, text="Save Tree", command=self.save_tree_state)
         save_button.pack(side=tk.LEFT, padx=5)
 
+        reset_button = ttk.Button(control_frame, text="Reset Tree", command=self.reset_tree)
+        reset_button.pack(side=tk.LEFT, padx=5)
+
         self.status_var = tk.StringVar(value="Enter a search query.")
         self.status_label = ttk.Label(control_frame, textvariable=self.status_var, foreground="blue")
         self.status_label.pack(side=tk.LEFT, padx=10)
+
+    def reset_tree(self):
+        """
+        Clears the tree and resets the citations cache.
+        """
+        self.tree.delete(*self.tree.get_children())  # Clear all nodes from the tree
+        self.citations_cache.clear()  # Reset the cache
+        self.set_status("Tree reset successfully.")
 
     def build_tree(self):
         self.tree = ttk.Treeview(self, columns=("title",), selectmode="browse")

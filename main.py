@@ -3,28 +3,35 @@ from tkinter import ttk, Toplevel, Listbox, END
 import time
 
 from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.common.exceptions import NoSuchElementException
 
-###################################################
-# Configure Selenium
-###################################################
-# Adjust these options/paths to match your system
-CHROME_DRIVER_PATH = "/path/to/chromedriver"
+# For Firefox:
+from selenium.webdriver.firefox.options import Options as FirefoxOptions
+from selenium.webdriver.firefox.service import Service as FirefoxService
 
-chrome_options = Options()
-# Run headless if you want no visible browser
-# chrome_options.add_argument("--headless")
+
+###################################################
+# Configure Selenium for Firefox
+###################################################
+# Set this to your local geckodriver path:
+FIREFOX_DRIVER_PATH = "C:\\Users\\alice\\Documents\\programs\\geckodriver.exe"
+
+firefox_options = FirefoxOptions()
+# If you want to run headless (no visible browser), uncomment:
+# firefox_options.add_argument("--headless")
+
+
+def init_driver():
+    """Initialize a Firefox WebDriver instance and return it."""
+    service = FirefoxService(executable_path=FIREFOX_DRIVER_PATH)
+    driver = webdriver.Firefox(service=service, options=firefox_options)
+    return driver
+
 
 ###################################################
 # Google Scholar Scraping Helpers
 ###################################################
-def init_driver():
-    """Initialize a Chrome WebDriver instance and return it."""
-    driver = webdriver.Chrome(executable_path=CHROME_DRIVER_PATH, options=chrome_options)
-    return driver
-
 def search_google_scholar(query, driver, max_results=10):
     """
     Search for `query` on Google Scholar, parse the first page,
@@ -34,10 +41,10 @@ def search_google_scholar(query, driver, max_results=10):
     base_url = "https://scholar.google.com"
     search_url = f"{base_url}/scholar?q={query.replace(' ', '+')}"
     driver.get(search_url)
-    time.sleep(1.5)  # small delay to let the page load
+    time.sleep(1.5)  # Small delay to let the page load (tune as needed)
 
     results = []
-    # The search results have a class 'gs_ri' for each item
+    # The search results have a class 'gs_ri' for each entry
     entries = driver.find_elements(By.CSS_SELECTOR, ".gs_r .gs_ri")
     
     for entry in entries[:max_results]:
@@ -55,7 +62,6 @@ def search_google_scholar(query, driver, max_results=10):
             cited_by_elem = entry.find_element(By.PARTIAL_LINK_TEXT, "Cited by")
             cited_by_link = cited_by_elem.get_attribute("href")
         except NoSuchElementException:
-            # Not found or no citations
             pass
 
         results.append({
@@ -65,6 +71,7 @@ def search_google_scholar(query, driver, max_results=10):
         })
 
     return results
+
 
 def get_citing_papers(cited_by_url, driver, max_results=10):
     """
@@ -104,19 +111,20 @@ def get_citing_papers(cited_by_url, driver, max_results=10):
 
     return results
 
+
 ###################################################
 # Tkinter Application
 ###################################################
 class CitationExplorer(tk.Tk):
     def __init__(self):
         super().__init__()
-        self.title("Google Scholar Citation Explorer")
+        self.title("Google Scholar Citation Explorer (Firefox)")
         self.geometry("1000x600")
 
         # We use a single Selenium driver for the app’s lifetime
         self.driver = init_driver()
 
-        # Cache: dict keyed by the “paper title or link”, storing the citing papers list
+        # Cache: dict keyed by the tuple (link, title), storing citing papers
         # so we don’t re-scrape if we expand the same node again.
         self.citations_cache = {}
 
@@ -167,7 +175,7 @@ class CitationExplorer(tk.Tk):
 
         self.set_status(f"Searching for: {query} ...")
 
-        # Launch a search in Google Scholar, parse results
+        # Launch a search on Google Scholar, parse results
         results = search_google_scholar(query, self.driver, max_results=20)
         if not results:
             self.set_status("No results found or could not parse results.")
@@ -208,7 +216,7 @@ class CitationExplorer(tk.Tk):
     def load_root_paper(self, paper):
         """
         Clears the tree and loads the 'paper' (dict) as the root paper.
-        Then, fetches its citations (i.e., the papers citing it).
+        Then fetches its citations (i.e., the papers citing it).
         """
         self.tree.delete(*self.tree.get_children())
         self.citations_cache.clear()
@@ -238,32 +246,25 @@ class CitationExplorer(tk.Tk):
         title = self.tree.item(item_id, "values")[0]
 
         # We'll store the paper in a dict to pass to expand_citations
-        # For the minimal approach, the "cited_by_link" can be found in our cache.
         # We used the (link, title) as a key in the cache dictionary.
         paper_key = (link, title)
-        if paper_key in self.citations_cache:
-            paper_dict = self.citations_cache[paper_key]
-            self.expand_citations(item_id, paper_dict)
-        else:
-            # If we don't have it cached, we can't easily get the "cited_by_link"
-            # (unless we had stored it originally). For a minimal approach,
-            # we do not handle this case well. A real app might keep track of it differently.
+        paper_dict = self.citations_cache.get(paper_key)
+        if paper_dict is None:
             self.set_status("No 'Cited by' link found or not cached.")
             return
+
+        self.expand_citations(item_id, paper_dict)
 
     def expand_citations(self, parent_item_id, paper):
         """
         Fetch the citing papers for `paper` if not already done,
         insert them as children under the node `parent_item_id`.
         """
-        # If we've already done it, skip
-        link = paper.get("link")
-        title = paper.get("title")
+        link = paper.get("link", "")
+        title = paper.get("title", "")
         paper_key = (link, title)
 
-        # If we already stored "citing papers" in citations_cache[paper_key]["citing"],
-        # we skip re-scraping.
-        # Otherwise, scrape them now.
+        # If we haven’t retrieved "citing" yet, do it now
         if "citing" not in paper:
             cited_by_url = paper.get("cited_by_link")
             if cited_by_url:
@@ -273,13 +274,13 @@ class CitationExplorer(tk.Tk):
             else:
                 paper["citing"] = []
 
-            # Make sure we store it in our main cache
+            # Store the updated paper in our cache
             self.citations_cache[paper_key] = paper
-        else:
-            citing_papers = paper["citing"]
+
+        citing_papers = paper["citing"]
 
         # Insert each citing paper into the tree
-        for citing_paper in paper["citing"]:
+        for citing_paper in citing_papers:
             child_link = citing_paper.get("link", "")
             child_title = citing_paper.get("title", "")
             child_id = self.tree.insert(
@@ -293,7 +294,7 @@ class CitationExplorer(tk.Tk):
             if child_key not in self.citations_cache:
                 self.citations_cache[child_key] = citing_paper
 
-        self.set_status(f"Found {len(paper['citing'])} citing papers for: {title}")
+        self.set_status(f"Found {len(citing_papers)} citing papers for: {title}")
 
     def set_status(self, msg):
         self.status_var.set(msg)

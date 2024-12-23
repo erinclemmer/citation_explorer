@@ -1,8 +1,0 @@
-// Add "delete save" button
-// Load drive path from json file
-// Save search tree
-Remove url column
-Make text larger
-// show the number of citations for each paper
-show the abstract or description as hover text for a paper
-improve ui

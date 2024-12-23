@@ -12,7 +12,6 @@ from selenium.common.exceptions import NoSuchElementException
 from selenium.webdriver.firefox.options import Options as FirefoxOptions
 from selenium.webdriver.firefox.service import Service as FirefoxService
 
-
 ###################################################
 # Load Firefox Driver Path from JSON Config
 ###################################################
@@ -36,9 +35,8 @@ if not FIREFOX_DRIVER_PATH:
 ###################################################
 # Configure Selenium for Firefox
 ###################################################
-
 firefox_options = FirefoxOptions()
-# If you want headless mode (invisible browser):
+# Uncomment this for headless mode (no visible browser):
 # firefox_options.add_argument("--headless")
 
 def init_driver():
@@ -52,17 +50,26 @@ def init_driver():
 ###################################################
 def search_google_scholar(query, driver, max_results=10, page_url=None):
     """
-    Searches or loads a page on Google Scholar, returns a list of dicts:
-      { "title", "cited_by_link", "num_citations", "is_next_page", "next_page_url" }
+    Searches (or loads a page on) Google Scholar and returns a list of dicts.
+    Each dict includes:
+        "title" (str),
+        "link" (str - direct link to the paper),
+        "cited_by_link" (str or None),
+        "num_citations" (int),
+        "is_next_page" (bool),
+        "next_page_url" (str or None),
+        "children" (list, initially empty).
     """
     base_url = "https://scholar.google.com"
+
     if page_url:
         driver.get(page_url)
     else:
+        # Build the initial search URL
         url = f"{base_url}/scholar?q={query.replace(' ', '+')}"
         driver.get(url)
 
-    time.sleep(1.5)  # Let the page load
+    time.sleep(1.5)  # Allow page to load
 
     results = []
     entries = driver.find_elements(By.CSS_SELECTOR, ".gs_r .gs_ri")
@@ -71,11 +78,13 @@ def search_google_scholar(query, driver, max_results=10, page_url=None):
         try:
             title_elem = entry.find_element(By.CSS_SELECTOR, "h3 a")
             title = title_elem.text.strip()
+            link = title_elem.get_attribute("href")  # <-- Capture the direct link
         except NoSuchElementException:
             continue
 
+        # Try to get "Cited by" link
         cited_by_link = None
-        num_citations = 0  # Default if not found
+        num_citations = 0
         try:
             cited_by_elem = entry.find_element(By.PARTIAL_LINK_TEXT, "Cited by")
             cited_by_link = cited_by_elem.get_attribute("href")
@@ -86,6 +95,7 @@ def search_google_scholar(query, driver, max_results=10, page_url=None):
 
         results.append({
             "title": title,
+            "link": link,                  # Store direct paper link
             "cited_by_link": cited_by_link,
             "num_citations": num_citations,
             "is_next_page": False,
@@ -93,7 +103,7 @@ def search_google_scholar(query, driver, max_results=10, page_url=None):
             "children": []
         })
 
-    # Check for next page
+    # Check if there's a "Next" page
     next_page_url = None
     try:
         next_button = driver.find_element(By.LINK_TEXT, "Next")
@@ -104,6 +114,7 @@ def search_google_scholar(query, driver, max_results=10, page_url=None):
     if next_page_url:
         results.append({
             "title": "Load Next Page >>",
+            "link": "",                    # No direct link for "Next Page"
             "cited_by_link": None,
             "num_citations": None,
             "is_next_page": True,
@@ -115,7 +126,8 @@ def search_google_scholar(query, driver, max_results=10, page_url=None):
 
 def get_citing_papers(cited_by_url, driver, max_results=10, page_url=None):
     """
-    Scrapes citing papers from a page given a 'Cited by' URL or next-page URL.
+    Scrapes citing papers from a given 'Cited by' URL or a next-page URL. 
+    Returns a list of dicts with the same structure as `search_google_scholar`.
     """
     if not cited_by_url and not page_url:
         return []
@@ -130,11 +142,13 @@ def get_citing_papers(cited_by_url, driver, max_results=10, page_url=None):
         try:
             title_elem = entry.find_element(By.CSS_SELECTOR, "h3 a")
             title = title_elem.text.strip()
+            link = title_elem.get_attribute("href")  # <-- Capture the direct link
         except NoSuchElementException:
             continue
 
+        # Try to get "Cited by" link
         cited_by_link = None
-        num_citations = 0  # Default if not found
+        num_citations = 0
         try:
             cited_by_elem = entry.find_element(By.PARTIAL_LINK_TEXT, "Cited by")
             cited_by_link = cited_by_elem.get_attribute("href")
@@ -145,6 +159,7 @@ def get_citing_papers(cited_by_url, driver, max_results=10, page_url=None):
 
         results.append({
             "title": title,
+            "link": link,                  # Store direct paper link
             "cited_by_link": cited_by_link,
             "num_citations": num_citations,
             "is_next_page": False,
@@ -152,7 +167,7 @@ def get_citing_papers(cited_by_url, driver, max_results=10, page_url=None):
             "children": []
         })
 
-    # Check for next page
+    # Check if there's a "Next" page
     next_page_url = None
     try:
         next_button = driver.find_element(By.LINK_TEXT, "Next")
@@ -163,6 +178,7 @@ def get_citing_papers(cited_by_url, driver, max_results=10, page_url=None):
     if next_page_url:
         results.append({
             "title": "Load Next Page >>",
+            "link": "",                    # No direct link for "Next Page"
             "cited_by_link": None,
             "num_citations": None,
             "is_next_page": True,
@@ -173,22 +189,22 @@ def get_citing_papers(cited_by_url, driver, max_results=10, page_url=None):
     return results
 
 ###################################################
-# Main Tkinter App
+# Main Tkinter App (No Table Columns)
 ###################################################
 class CitationExplorer(tk.Tk):
     SAVE_FILE = "tree_state.json"
 
     def __init__(self):
         super().__init__()
-        self.title("Google Scholar Citation Explorer with Right-Click Menu")
+        self.title("Google Scholar Citation Explorer (Single-Column View)")
         self.geometry("1100x600")
 
-        # Driver & cache
+        # Selenium driver & in-memory cache
         self.driver = init_driver()
-        # citations_cache: dict keyed by (link, title) -> dict with paper info & "children"
-        self.citations_cache = {}
+        # item_to_paper maps a TreeView node ID -> paper dict
+        self.item_to_paper = {}
 
-        # Build UI
+        # Build the UI controls and the single-column TreeView
         self.build_controls()
         self.build_tree()
 
@@ -214,7 +230,7 @@ class CitationExplorer(tk.Tk):
         save_button.pack(side=tk.LEFT, padx=5)
 
         load_button = ttk.Button(control_frame, text="Load Path", command=self.load_saved_path)
-        load_button.pack(side=tk.LEFT, padx=5)  # Add the new button here
+        load_button.pack(side=tk.LEFT, padx=5)
 
         reset_button = ttk.Button(control_frame, text="Reset Tree", command=self.reset_tree)
         reset_button.pack(side=tk.LEFT, padx=5)
@@ -223,9 +239,35 @@ class CitationExplorer(tk.Tk):
         self.status_label = ttk.Label(control_frame, textvariable=self.status_var, foreground="blue")
         self.status_label.pack(side=tk.LEFT, padx=10)
 
+    def build_tree(self):
+        # Single-column TreeView: we only use the #0 column to show info.
+        self.tree = ttk.Treeview(self)
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
+        scrollbar.pack(side=tk.LEFT, fill=tk.Y)
+        self.tree.configure(yscrollcommand=scrollbar.set)
+
+        # Rename the heading for clarity
+        self.tree.heading("#0", text="Papers / Citations", anchor=tk.W)
+
+        # Bind double-click and right-click
+        self.tree.bind("<Double-1>", self.on_tree_item_double_click)
+        self.tree.bind("<Button-3>", self.on_tree_right_click)
+
+    def create_context_menu(self):
+        self.tree_menu = tk.Menu(self, tearoff=0)
+        self.tree_menu.add_command(label="Open Paper URL", command=self.on_open_paper_url)
+        self.tree_menu.add_separator()
+        self.tree_menu.add_command(label="Save Node Path to File", command=self.save_node_path_to_file)
+        self.tree_menu.add_command(label="Save Tree State", command=self.save_tree_state)
+
+    ###################################################
+    # Loading and resetting the Tree
+    ###################################################
     def load_saved_path(self):
         """
-        Load a saved tree state from a file and reconstruct it with all citations.
+        Load a saved tree state from a file and reconstruct it.
         """
         file_path = tk.filedialog.askopenfilename(
             title="Load Tree State",
@@ -236,7 +278,6 @@ class CitationExplorer(tk.Tk):
             return
 
         try:
-            # Load the full tree structure
             with open(file_path, "r", encoding="utf-8") as f:
                 paper_list = json.load(f)
 
@@ -244,273 +285,43 @@ class CitationExplorer(tk.Tk):
                 self.set_status("Loaded tree is empty.")
                 return
 
-            # Clear the current tree and citations cache
+            # Clear the current tree and our item->paper map
             self.tree.delete(*self.tree.get_children())
-            self.citations_cache.clear()
+            self.item_to_paper.clear()
 
-            # Reconstruct the tree
             for paper in paper_list:
-                self.insert_paper_recursive("", paper)  # parent="" for root-level papers
-
+                self.insert_paper_recursive("", paper)
             self.set_status(f"Tree state successfully loaded from {file_path}")
+
         except Exception as e:
             self.set_status(f"Error loading tree: {e}")
 
     def reset_tree(self):
-        """
-        Clears the tree and resets the citations cache.
-        """
-        self.tree.delete(*self.tree.get_children())  # Clear all nodes from the tree
-        self.citations_cache.clear()  # Reset the cache
+        self.tree.delete(*self.tree.get_children())
+        self.item_to_paper.clear()
         self.set_status("Tree reset successfully.")
 
-    def build_tree(self):
-        self.tree = ttk.Treeview(self, columns=("title", "num_citations"), selectmode="browse")
-        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-
-        scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
-        scrollbar.pack(side=tk.LEFT, fill=tk.Y)
-        self.tree.configure(yscrollcommand=scrollbar.set)
-
-        self.tree.heading("#0", text="Special", anchor=tk.W)
-        self.tree.heading("title", text="Title", anchor=tk.W)
-        self.tree.heading("num_citations", text="Number of Citations", anchor=tk.W)
-
-        self.tree.column("#0", width=150, stretch=False)
-        self.tree.column("title", width=600, stretch=True)
-        self.tree.column("num_citations", width=150, stretch=False)
-
-        # Double-click expand
-        self.tree.bind("<Double-1>", self.on_tree_item_double_click)
-        # Right-click event
-        self.tree.bind("<Button-3>", self.on_tree_right_click)
-
-    def create_context_menu(self):
-        """
-        Creates a context menu that will show when right-clicking on a tree item.
-        """
-        self.tree_menu = tk.Menu(self, tearoff=0)
-        self.tree_menu.add_command(label="Open Paper URL", command=self.on_open_paper_url)
-        self.tree_menu.add_separator()
-        self.tree_menu.add_command(label="Save Node Path to File", command=self.save_node_path_to_file)
-        self.tree_menu.add_command(label="Save Tree State", command=self.save_tree_state)
-
-    def save_node_path_to_file(self):
-        """
-        Saves the selected node's path (root to selected node) to a file, including
-        all relevant data such as `is_next_page` and `children`.
-        """
-        item_id = self.tree.selection()
-        if not item_id:
-            self.set_status("No item selected.")
-            return
-
-        # Gather path from root to selected item
-        path = []
-        current_id = item_id[0]
-        while current_id:
-            link = self.tree.item(current_id, "text")
-            title = self.tree.item(current_id, "values")[0]
-            paper_key = (link, title)
-
-            # Retrieve the paper data from the cache
-            paper = self.citations_cache.get(paper_key, {})
-            if not paper:
-                self.set_status("Error: Node data not found in cache.")
-                return
-
-            # Create a copy of the paper with all relevant fields
-            node_data = {
-                "title": paper.get("title", ""),
-                "link": paper.get("link", ""),
-                "cited_by_link": paper.get("cited_by_link"),
-                "is_next_page": paper.get("is_next_page", False),
-                "next_page_url": paper.get("next_page_url"),
-                "children": paper.get("children", [])  # Include children
-            }
-            path.append(node_data)
-
-            # Move to the parent node
-            current_id = self.tree.parent(current_id)
-
-        # Reverse path to go root -> selected
-        path.reverse()
-
-        # Use file dialog to select save location
-        file_path = tk.filedialog.asksaveasfilename(
-            title="Save Node Path to File",
-            defaultextension=".json",
-            filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")]
-        )
-        if not file_path:
-            self.set_status("Save operation canceled.")
-            return
-
-        # Save to file
-        try:
-            with open(file_path, "w", encoding="utf-8") as f:
-                json.dump(path, f, indent=2)
-            self.set_status(f"Node path saved to {file_path}")
-        except Exception as e:
-            self.set_status(f"Error saving path: {e}")
-
-    ######################
-    # Right-Click Handler
-    ######################
-    def on_tree_right_click(self, event):
-        """
-        Right-click (Button-3) handler. We select the clicked item and show the menu.
-        """
-        item_id = self.tree.identify_row(event.y)
-        if not item_id:
-            return  # clicked on empty space, no item
-
-        # Select this item in the tree
-        self.tree.selection_set(item_id)
-        
-        # Show the context menu
-        self.tree_menu.post(event.x_root, event.y_root)
-
-    def on_open_paper_url(self):
-        """
-        Called by right-click menu -> "Open Paper URL".
-        We open the paper's link in the default browser.
-        """
-        # Which item is selected?
-        item_id = self.tree.selection()
-        if not item_id:
-            return
-
-        item_id = item_id[0]
-        link = self.tree.item(item_id, "text")
-        title = self.tree.item(item_id, "values")[0]
-        paper_key = (link, title)
-
-        paper = self.citations_cache.get(paper_key)
-        if not paper:
-            self.set_status("No data in cache for this item.")
-            return
-
-        # If it's a normal paper, link should be valid
-        if paper["is_next_page"]:
-            self.set_status("This is a 'Load Next Page' item, no URL to open.")
-            return
-
-        if paper["link"]:
-            webbrowser.open(paper["link"])
-        else:
-            self.set_status("No valid link to open.")
-
-    ######################
-    # Tree Loading & Saving
-    ######################
     def load_tree_state_on_startup(self):
         """
-        Called in __init__. If SAVE_FILE exists, try to load it and reconstruct the tree.
+        Load previously saved state from SAVE_FILE if it exists.
         """
         if os.path.exists(self.SAVE_FILE):
             try:
                 with open(self.SAVE_FILE, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                # Data is the entire root set or a single root?
-                # We'll assume we saved a list of root-level papers
                 self.tree.delete(*self.tree.get_children())
-                self.citations_cache.clear()
-
-                # Insert each top-level paper
+                self.item_to_paper.clear()
                 for paper in data:
-                    self.insert_paper_recursive("", paper)  # parent=""
-                
+                    self.insert_paper_recursive("", paper)
                 self.set_status("Loaded tree from saved state.")
             except Exception as e:
                 self.set_status(f"Could not load saved state: {e}")
         else:
             self.set_status("No saved state found. Ready.")
 
-    def insert_paper_recursive(self, parent_item_id, paper):
-        """
-        Recursively insert 'paper' (dict) into the TreeView under 'parent_item_id'.
-        Also store in citations_cache, then handle its children.
-        """
-        text = "[NEXT PAGE]" if paper["is_next_page"] else ""
-        val = paper.get("title", "")
-        num_citations = paper.get("num_citations", "N/A")
-
-        node_id = self.tree.insert(parent_item_id, tk.END, text=text, values=(val, num_citations), open=False)
-
-        # Store in cache
-        key = (text, val)
-        self.citations_cache[key] = paper
-
-        # Recurse for children
-        for child in paper.get("children", []):
-            self.insert_paper_recursive(node_id, child)
-
-    def save_tree_state(self):
-        """
-        Gathers the entire tree from self.citations_cache, organizes it into a structure
-        with 'children', and writes to JSON file self.SAVE_FILE.
-        """
-        root_nodes = self.tree.get_children("")
-        paper_list = []
-        for root_node in root_nodes:
-            paper_dict = self.build_paper_recursive(root_node)
-            if paper_dict:
-                paper_list.append(paper_dict)
-
-        file_path = asksaveasfilename(
-            title="Save Tree State",
-            defaultextension=".json",
-            filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")]
-        )
-        if not file_path:
-            self.set_status("Save operation canceled.")
-            return
-
-        try:
-            with open(file_path, "w", encoding="utf-8") as f:
-                json.dump(paper_list, f, indent=2)
-            self.set_status(f"Tree state saved to {file_path}")
-        except Exception as e:
-            self.set_status(f"Error saving tree: {e}")
-
-
-    def build_paper_recursive(self, item_id):
-        """
-        Given a tree item_id, find its key, get the paper from the cache,
-        then recursively build a dict with paper + 'children': [...]
-        """
-        link = self.tree.item(item_id, "text")
-        title = self.tree.item(item_id, "values")[0]
-        paper_key = (link, title)
-
-        # Retrieve the paper from the cache
-        paper = self.citations_cache.get(paper_key)
-        if not paper:
-            return None
-
-        # Create a copy of the paper with all required fields
-        result = {
-            "title": paper.get("title", ""),
-            "link": paper.get("link", ""),
-            "cited_by_link": paper.get("cited_by_link"),
-            "is_next_page": paper.get("is_next_page", False),
-            "next_page_url": paper.get("next_page_url"),
-            "children": []  # Populate children recursively
-        }
-
-        # Recursively build children
-        child_ids = self.tree.get_children(item_id)
-        for child_id in child_ids:
-            child_dict = self.build_paper_recursive(child_id)
-            if child_dict:
-                result["children"].append(child_dict)
-
-        return result
-
-    ######################
+    ###################################################
     # Searching
-    ######################
+    ###################################################
     def do_search(self):
         query = self.search_var.get().strip()
         if not query:
@@ -549,7 +360,7 @@ class CitationExplorer(tk.Tk):
             if paper["is_next_page"]:
                 # load next page
                 next_res = search_google_scholar(
-                    None,  # query
+                    None,
                     self.driver,
                     max_results=10,
                     page_url=paper["next_page_url"]
@@ -570,72 +381,75 @@ class CitationExplorer(tk.Tk):
 
     def load_root_paper(self, paper):
         """
-        Clears the tree, resets the cache, then inserts 'paper' as the root.
-        Then calls expand_citations() if needed.
+        Clears the tree, sets 'paper' as the root, and expands its citations if needed.
         """
         self.tree.delete(*self.tree.get_children())
-        self.citations_cache.clear()
+        self.item_to_paper.clear()
 
-        link = paper.get("link") or ""
-        title = paper.get("title") or ""
-        is_next = paper.get("is_next_page", False)
-
-        text = "[NEXT PAGE]" if is_next else link
-        val = "Load Next Page >>" if is_next else title
-
-        root_id = self.tree.insert("", tk.END, text=text, values=(val,), open=True)
-        self.citations_cache[(text, val)] = paper
-
-        # Expand it
+        root_id = self.insert_paper_node("", paper)
         self.expand_citations(root_id, paper)
-        self.set_status(f"Loaded root: {title}")
+        self.set_status(f"Loaded root: {paper.get('title', '')}")
 
-    ######################
-    # Double-Click Expand
-    ######################
+    ###################################################
+    # Tree Insert/Expand Helpers
+    ###################################################
+    def insert_paper_node(self, parent_item_id, paper):
+        """
+        Inserts a single paper node into the TreeView. Returns the node ID.
+        """
+        # Compose a readable single-column text
+        if paper.get("is_next_page"):
+            display_text = f"[NEXT PAGE] {paper['title']}"
+        else:
+            title_part = paper.get("title", "")
+            cites = paper.get("num_citations", "N/A")
+            display_text = f"{title_part}  [Citations: {cites}]"
+
+        node_id = self.tree.insert(parent_item_id, END, text=display_text)
+        # Map the item ID to the paper dict
+        self.item_to_paper[node_id] = paper
+        return node_id
+
+    def insert_paper_recursive(self, parent_item_id, paper):
+        """
+        Recursively insert 'paper' (dict) into the TreeView under 'parent_item_id'.
+        """
+        node_id = self.insert_paper_node(parent_item_id, paper)
+        for child in paper.get("children", []):
+            self.insert_paper_recursive(node_id, child)
+
     def on_tree_item_double_click(self, event):
         item_id = self.tree.focus()
         if not item_id:
             return
 
-        link = self.tree.item(item_id, "text")
-        title = self.tree.item(item_id, "values")[0]
-        paper_key = (link, title)
-
-        if paper_key not in self.citations_cache:
+        paper = self.item_to_paper.get(item_id)
+        if not paper:
             self.set_status("No data in cache for this item.")
             return
 
-        paper = self.citations_cache[paper_key]
-
-        # If it's a next-page item
+        # If this node represents a "Load Next Page" item
         if paper["is_next_page"]:
-            next_url = paper["next_page_url"]
+            next_url = paper.get("next_page_url")
             if not next_url:
                 return
             parent_id = self.tree.parent(item_id)
-            # Remove the "Load Next Page >>" node
+            # Remove the [NEXT PAGE] node
             self.tree.delete(item_id)
 
-            # Fetch next page
+            # Fetch more citing papers
             citing = get_citing_papers(None, self.driver, max_results=10, page_url=next_url)
-
-            # Parent paper
-            parent_link = self.tree.item(parent_id, "text")
-            parent_title = self.tree.item(parent_id, "values")[0]
-            parent_key = (parent_link, parent_title)
-            parent_paper = self.citations_cache.get(parent_key, {})
+            parent_paper = self.item_to_paper.get(parent_id, {})
             if "children" not in parent_paper:
                 parent_paper["children"] = []
             parent_paper["children"].extend(citing)
 
             # Insert them
-            for c_paper in citing:
-                self.insert_citing_node(parent_id, c_paper)
-            
+            for c in citing:
+                self.insert_paper_node(parent_id, c)
             self.set_status("Loaded next page of citing papers.")
         else:
-            # Normal paper
+            # Normal paper: expand its citations if not already expanded
             children = self.tree.get_children(item_id)
             if children:
                 self.set_status("Already expanded.")
@@ -644,7 +458,7 @@ class CitationExplorer(tk.Tk):
 
     def expand_citations(self, parent_item_id, paper):
         """
-        If paper has no 'children', fetch them from 'cited_by_link' and add to the tree.
+        If paper has no 'children', fetch them. Insert them under parent_item_id.
         """
         if not paper.get("children"):
             cb_link = paper.get("cited_by_link")
@@ -656,42 +470,157 @@ class CitationExplorer(tk.Tk):
                 paper["children"] = []
 
         for c_paper in paper["children"]:
-            self.insert_citing_node(parent_item_id, c_paper)
+            self.insert_paper_node(parent_item_id, c_paper)
 
         title = paper.get("title", "")
         self.set_status(f"Found {len(paper['children'])} citing papers for: {title}")
 
-    def insert_citing_node(self, parent_item_id, c_paper):
+    ###################################################
+    # Right-Click Functionality
+    ###################################################
+    def on_tree_right_click(self, event):
+        item_id = self.tree.identify_row(event.y)
+        if not item_id:
+            return
+        self.tree.selection_set(item_id)
+        self.tree_menu.post(event.x_root, event.y_root)
+
+    def on_open_paper_url(self):
+        item_id = self._get_selected_item_id()
+        if not item_id:
+            return
+        paper = self.item_to_paper.get(item_id)
+        if not paper:
+            self.set_status("No data for this item.")
+            return
+        if paper["is_next_page"]:
+            self.set_status("This is a 'Load Next Page' item, no URL to open.")
+            return
+        if paper.get("link"):
+            webbrowser.open(paper["link"])
+        else:
+            self.set_status("No valid link to open.")
+
+    def save_node_path_to_file(self):
         """
-        Insert a child node for c_paper under parent_item_id, store it in the cache.
+        Saves the selected node's path (root -> node) to a file, including children.
         """
-        is_next = c_paper.get("is_next_page", False)
-        text = "[NEXT PAGE]" if is_next else ""
-        val = c_paper.get("title", "")
-        num_citations = c_paper.get("num_citations", "N/A")
+        item_id = self._get_selected_item_id()
+        if not item_id:
+            self.set_status("No item selected.")
+            return
 
-        child_id = self.tree.insert(parent_item_id, tk.END, text=text, values=(val, num_citations), open=False)
+        # Build path from root -> selected
+        path = []
+        current_id = item_id
+        while current_id:
+            paper = self.item_to_paper.get(current_id, {})
+            if not paper:
+                self.set_status("Error: Node data not found.")
+                return
+            path.append({
+                "title": paper.get("title", ""),
+                "link": paper.get("link", ""),
+                "cited_by_link": paper.get("cited_by_link"),
+                "is_next_page": paper.get("is_next_page", False),
+                "next_page_url": paper.get("next_page_url"),
+                "children": paper.get("children", [])
+            })
+            current_id = self.tree.parent(current_id)
+        path.reverse()
 
-        # Store in cache
-        self.citations_cache[(text, val)] = c_paper
+        # Ask user for where to save
+        file_path = tk.filedialog.asksaveasfilename(
+            title="Save Node Path to File",
+            defaultextension=".json",
+            filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")]
+        )
+        if not file_path:
+            self.set_status("Save operation canceled.")
+            return
 
-    ######################
-    # Status
-    ######################
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                json.dump(path, f, indent=2)
+            self.set_status(f"Node path saved to {file_path}")
+        except Exception as e:
+            self.set_status(f"Error saving path: {e}")
+
+    ###################################################
+    # Saving / Loading Entire Tree
+    ###################################################
+    def save_tree_state(self):
+        """
+        Gather the entire tree into a structure with 'children', then save it to file.
+        """
+        root_nodes = self.tree.get_children("")
+        paper_list = []
+        for rn in root_nodes:
+            p = self.build_paper_recursive(rn)
+            if p:
+                paper_list.append(p)
+
+        # Let user pick where to save
+        file_path = asksaveasfilename(
+            title="Save Tree State",
+            defaultextension=".json",
+            filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")]
+        )
+        if not file_path:
+            self.set_status("Save operation canceled.")
+            return
+
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                json.dump(paper_list, f, indent=2)
+            self.set_status(f"Tree state saved to {file_path}")
+        except Exception as e:
+            self.set_status(f"Error saving tree: {e}")
+
+    def build_paper_recursive(self, item_id):
+        """
+        Return a dict describing this paper and its children, from item_to_paper.
+        """
+        paper = self.item_to_paper.get(item_id)
+        if not paper:
+            return None
+
+        result = {
+            "title": paper.get("title", ""),
+            "link": paper.get("link", ""),
+            "cited_by_link": paper.get("cited_by_link"),
+            "is_next_page": paper.get("is_next_page", False),
+            "next_page_url": paper.get("next_page_url"),
+            "children": []
+        }
+
+        for child_id in self.tree.get_children(item_id):
+            child_data = self.build_paper_recursive(child_id)
+            if child_data:
+                result["children"].append(child_data)
+
+        return result
+
+    ###################################################
+    # Utility
+    ###################################################
+    def _get_selected_item_id(self):
+        sel = self.tree.selection()
+        if not sel:
+            return None
+        return sel[0]
+
     def set_status(self, msg):
         self.status_var.set(msg)
         self.update_idletasks()
 
     def on_closing(self):
-        """
-        If you want to auto-save on close or do a graceful driver.quit().
-        """
+        # If you wish to gracefully quit the driver on close:
         self.driver.quit()
         self.destroy()
 
-
 if __name__ == "__main__":
     app = CitationExplorer()
-    # If you want to auto-save or do something on close:
+    # Uncomment to auto-save or handle on-close events:
     # app.protocol("WM_DELETE_WINDOW", app.on_closing)
     app.mainloop()

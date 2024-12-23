@@ -7,10 +7,18 @@ import requests
 # -----------------------------------
 API_URL = "https://api.semanticscholar.org/graph/v1"
 API_KEY = "YOUR_API_KEY_HERE"
-# Adjust these fields as you wish:
-ROOT_FIELDS = "title,year"              # to retrieve metadata of the root paper
-CITATION_FIELDS = "title,year,citations"  # fields for citing papers
-DEFAULT_PAGE_SIZE = 50                  # how many citations to load per call
+
+# Fields for the root paper (title, year, etc.)
+ROOT_FIELDS = "title,year"
+
+# Fields for citing papers
+CITATION_FIELDS = "title,year,citations"
+
+# How many citations to load per call
+DEFAULT_PAGE_SIZE = 50
+
+# How many search results to show
+DEFAULT_SEARCH_LIMIT = 20
 
 # -----------------------------------
 # API Helper Functions
@@ -18,7 +26,7 @@ DEFAULT_PAGE_SIZE = 50                  # how many citations to load per call
 def fetch_paper_info(paper_id, fields=ROOT_FIELDS):
     """
     Fetch metadata for a single paper (e.g., title, year).
-    Returns a dict with keys like 'paperId', 'title', 'year', 'citations', etc.
+    Returns a dict with keys like 'paperId', 'title', 'year', etc.
     If there's an error, returns None.
     """
     # headers = {"x-api-key": API_KEY}
@@ -37,16 +45,9 @@ def get_forward_citations(paper_id, limit=DEFAULT_PAGE_SIZE, offset=0):
     """
     Fetch the papers that cite the given paper (forward citations).
     Returns (citations_list, total_citations_count) or ([], 0) on error.
-    
-    The Graph API endpoint:
-      GET /paper/{paper_id}?fields=title,year,citations
-    By default, up to 100 citing papers can be returned. 
-    If you need more, you can handle 'offset' and 'limit'.
     """
     # headers = {"x-api-key": API_KEY}
     headers = { }
-    
-    # We include 'citations.paperId', 'citations.title', etc. in CITATION_FIELDS
     url = (
         f"{API_URL}/paper/{paper_id}"
         f"?fields={CITATION_FIELDS}&limit={limit}&offset={offset}"
@@ -55,20 +56,38 @@ def get_forward_citations(paper_id, limit=DEFAULT_PAGE_SIZE, offset=0):
         r = requests.get(url, headers=headers, timeout=10)
         r.raise_for_status()
         data = r.json()
-        
-        # The top-level paper is returned in 'data', with a 'citations' field
+
         citations = data.get("citations", [])
-        
-        # The total number of citing papers might be found in 'data["citationCount"]'
-        # but it’s not always accurate. Alternatively, you can parse the "next" link
-        # from the "links" field if the API returns it. For simplicity, let's assume
-        # the total is the length of the citations array plus offset. 
         total_citations = data.get("citationCount", len(citations))
         return citations, total_citations
-        
+
     except requests.exceptions.RequestException as e:
         print(f"Error fetching citations for {paper_id}: {e}")
         return [], 0
+
+def search_papers(query, limit=DEFAULT_SEARCH_LIMIT, offset=0):
+    """
+    Search for papers by a textual query using the /paper/search endpoint.
+    Returns a list of paper objects (each has 'paperId', 'title', 'year', etc.)
+    or an empty list if there's an error or no results.
+    """
+    headers = {"x-api-key": API_KEY}
+    # fields we want to retrieve in the search results:
+    fields = "title,year"
+    url = (
+        f"{API_URL}/paper/search?"
+        f"query={query}&limit={limit}&offset={offset}&fields={fields}"
+    )
+    try:
+        r = requests.get(url, headers=headers, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        # data['data'] is a list of paper objects
+        papers = data.get("data", [])
+        return papers
+    except requests.exceptions.RequestException as e:
+        print(f"Error searching for papers: {e}")
+        return []
 
 # -----------------------------------
 # Main Tkinter App
@@ -80,10 +99,11 @@ class CitationExplorer(tk.Tk):
         self.geometry("900x600")
 
         # Caches to avoid repeated calls for the same paper
-        #   citations_cache[paper_id] = list of citations already fetched
         self.citations_cache = {}
 
-        # Create frames
+        # ----------------------------
+        # Control Frame (Top)
+        # ----------------------------
         control_frame = ttk.Frame(self)
         control_frame.pack(side=tk.TOP, fill=tk.X, padx=5, pady=5)
 
@@ -93,15 +113,29 @@ class CitationExplorer(tk.Tk):
         self.paper_id_entry = ttk.Entry(control_frame, textvariable=self.paper_id_var, width=50)
         self.paper_id_entry.pack(side=tk.LEFT, padx=5)
 
+        # Load button
         load_button = ttk.Button(control_frame, text="Load", command=self.load_root_paper)
         load_button.pack(side=tk.LEFT, padx=5)
+
+        # OR: Search
+        search_label = ttk.Label(control_frame, text="Search Query:")
+        search_label.pack(side=tk.LEFT, padx=5)
+
+        self.search_var = tk.StringVar()
+        self.search_entry = ttk.Entry(control_frame, textvariable=self.search_var, width=30)
+        self.search_entry.pack(side=tk.LEFT, padx=5)
+
+        search_button = ttk.Button(control_frame, text="Search", command=self.on_search_click)
+        search_button.pack(side=tk.LEFT, padx=5)
 
         # Status label
         self.status_var = tk.StringVar(value="Waiting for input...")
         self.status_label = ttk.Label(control_frame, textvariable=self.status_var, foreground="blue")
         self.status_label.pack(side=tk.LEFT, padx=10)
 
-        # Treeview
+        # ----------------------------
+        # Treeview (Left)
+        # ----------------------------
         self.tree = ttk.Treeview(self, columns=("title", "year"), selectmode="browse")
         self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
 
@@ -122,14 +156,20 @@ class CitationExplorer(tk.Tk):
         # Bind double-click
         self.tree.bind("<Double-1>", self.on_tree_item_double_click)
 
-    def load_root_paper(self):
+    # ----------------------------
+    # Core Citation Loading Logic
+    # ----------------------------
+    def load_root_paper(self, paper_id=None):
         """
-        Clears the tree and loads the top-level paper. 
-        Then fetches its forward citations.
+        Clears the tree and loads the top-level (root) paper by ID.
+        If 'paper_id' is None, use whatever is in the self.paper_id_var.
+        Then fetch its forward citations.
         """
-        paper_id = self.paper_id_var.get().strip()
+        if paper_id is None:
+            paper_id = self.paper_id_var.get().strip()
+
         if not paper_id:
-            self.set_status("Please enter a valid paper ID/DOI/ArXiv.")
+            self.set_status("Please enter a valid paper ID/DOI/ArXiv or select from search.")
             return
 
         # Clear existing tree & caches
@@ -166,21 +206,19 @@ class CitationExplorer(tk.Tk):
         if not item_id:
             return
 
-        # If it already has children, we assume it's expanded or partially loaded.
-        # You could handle "Load More" logic here if you want to page further results.
+        # If it already has children, we assume it's expanded.
         children = self.tree.get_children(item_id)
         if children:
             self.set_status("Already expanded.")
             return
 
-        # Get the paper ID from the node
         paper_id = self.tree.item(item_id, "text")
         self.expand_citations(item_id, paper_id)
 
     def expand_citations(self, parent_item_id, paper_id):
         """
         Fetch forward citations of `paper_id` (unless cached),
-        and insert them as children under the node `parent_item_id`.
+        and insert them as children under `parent_item_id`.
         """
         # Check cache
         if paper_id in self.citations_cache:
@@ -195,7 +233,6 @@ class CitationExplorer(tk.Tk):
             title = c.get("title", "Unknown Title")
             year = c.get("year", "")
 
-            # Avoid inserting duplicates if they exist
             if not self._child_exists(parent_item_id, child_id):
                 self.tree.insert(parent_item_id, tk.END, text=child_id, values=(title, year))
 
@@ -212,8 +249,81 @@ class CitationExplorer(tk.Tk):
                 return True
         return False
 
+    # ----------------------------
+    # Searching Logic
+    # ----------------------------
+    def on_search_click(self):
+        """
+        Called when the user presses the 'Search' button.
+        Opens a Toplevel with a list of matching papers for the user’s query.
+        """
+        query = self.search_var.get().strip()
+        if not query:
+            self.set_status("Please enter a search query.")
+            return
+
+        self.set_status(f"Searching for '{query}'...")
+        results = search_papers(query)
+        if not results:
+            self.set_status("No results found or error during search.")
+            return
+
+        self.set_status(f"Found {len(results)} results for '{query}'.")
+
+        # Show a pop-up window with the search results
+        self.show_search_results_window(query, results)
+
+    def show_search_results_window(self, query, results):
+        """
+        Create a Toplevel window that displays the search results in a Treeview.
+        Allow the user to select a paper to load as the root paper.
+        """
+        popup = tk.Toplevel(self)
+        popup.title(f"Search results for '{query}'")
+
+        # Treeview for search results
+        columns = ("title", "year")
+        search_tree = ttk.Treeview(popup, columns=columns, show="headings", selectmode="browse")
+        search_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # Scrollbar
+        sb = ttk.Scrollbar(popup, orient=tk.VERTICAL, command=search_tree.yview)
+        sb.pack(side=tk.LEFT, fill=tk.Y)
+        search_tree.configure(yscrollcommand=sb.set)
+
+        # Define columns
+        search_tree.heading("title", text="Title", anchor=tk.W)
+        search_tree.heading("year", text="Year", anchor=tk.CENTER)
+
+        search_tree.column("title", width=600, anchor=tk.W)
+        search_tree.column("year", width=60, anchor=tk.CENTER)
+
+        # Insert rows
+        for paper in results:
+            pid = paper.get("paperId", "")
+            title = paper.get("title", "(No title)")
+            year = paper.get("year", "")
+            search_tree.insert("", tk.END, values=(title, year), iid=pid)
+
+        # Double-click on a row to load that paper
+        def on_search_result_double_click(event):
+            item_id = search_tree.focus()
+            if not item_id:
+                return
+            # item_id here is the 'iid' we used: the paperId
+            paper_id = item_id  # which we set as the 'iid' in search_tree.insert()
+            # Load as root paper
+            self.paper_id_var.set(paper_id)
+            self.load_root_paper(paper_id)
+            popup.destroy()
+
+        search_tree.bind("<Double-1>", on_search_result_double_click)
+
+    # ----------------------------
+    # Utility
+    # ----------------------------
     def set_status(self, message):
-        """ Update status label text. """
+        """Update status label text."""
         self.status_var.set(message)
 
 

@@ -1,4 +1,5 @@
 import tkinter as tk
+from tkinter.filedialog import asksaveasfilename
 from tkinter import ttk, Toplevel, Listbox, END
 import json
 import os
@@ -215,12 +216,48 @@ class CitationExplorer(tk.Tk):
         save_button = ttk.Button(control_frame, text="Save Tree", command=self.save_tree_state)
         save_button.pack(side=tk.LEFT, padx=5)
 
+        load_button = ttk.Button(control_frame, text="Load Path", command=self.load_saved_path)
+        load_button.pack(side=tk.LEFT, padx=5)  # Add the new button here
+
         reset_button = ttk.Button(control_frame, text="Reset Tree", command=self.reset_tree)
         reset_button.pack(side=tk.LEFT, padx=5)
 
         self.status_var = tk.StringVar(value="Enter a search query.")
         self.status_label = ttk.Label(control_frame, textvariable=self.status_var, foreground="blue")
         self.status_label.pack(side=tk.LEFT, padx=10)
+
+    def load_saved_path(self):
+        """
+        Load a saved tree state from a file and reconstruct it with all citations.
+        """
+        file_path = tk.filedialog.askopenfilename(
+            title="Load Tree State",
+            filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")]
+        )
+        if not file_path:
+            self.set_status("Load operation canceled.")
+            return
+
+        try:
+            # Load the full tree structure
+            with open(file_path, "r", encoding="utf-8") as f:
+                paper_list = json.load(f)
+
+            if not paper_list:
+                self.set_status("Loaded tree is empty.")
+                return
+
+            # Clear the current tree and citations cache
+            self.tree.delete(*self.tree.get_children())
+            self.citations_cache.clear()
+
+            # Reconstruct the tree
+            for paper in paper_list:
+                self.insert_paper_recursive("", paper)  # parent="" for root-level papers
+
+            self.set_status(f"Tree state successfully loaded from {file_path}")
+        except Exception as e:
+            self.set_status(f"Error loading tree: {e}")
 
     def reset_tree(self):
         """
@@ -256,7 +293,67 @@ class CitationExplorer(tk.Tk):
         self.tree_menu = tk.Menu(self, tearoff=0)
         self.tree_menu.add_command(label="Open Paper URL", command=self.on_open_paper_url)
         self.tree_menu.add_separator()
+        self.tree_menu.add_command(label="Save Node Path to File", command=self.save_node_path_to_file)
         self.tree_menu.add_command(label="Save Tree State", command=self.save_tree_state)
+
+    def save_node_path_to_file(self):
+        """
+        Saves the selected node's path (root to selected node) to a file, including
+        all relevant data such as `is_next_page` and `children`.
+        """
+        item_id = self.tree.selection()
+        if not item_id:
+            self.set_status("No item selected.")
+            return
+
+        # Gather path from root to selected item
+        path = []
+        current_id = item_id[0]
+        while current_id:
+            link = self.tree.item(current_id, "text")
+            title = self.tree.item(current_id, "values")[0]
+            paper_key = (link, title)
+
+            # Retrieve the paper data from the cache
+            paper = self.citations_cache.get(paper_key, {})
+            if not paper:
+                self.set_status("Error: Node data not found in cache.")
+                return
+
+            # Create a copy of the paper with all relevant fields
+            node_data = {
+                "title": paper.get("title", ""),
+                "link": paper.get("link", ""),
+                "cited_by_link": paper.get("cited_by_link"),
+                "is_next_page": paper.get("is_next_page", False),
+                "next_page_url": paper.get("next_page_url"),
+                "children": paper.get("children", [])  # Include children
+            }
+            path.append(node_data)
+
+            # Move to the parent node
+            current_id = self.tree.parent(current_id)
+
+        # Reverse path to go root -> selected
+        path.reverse()
+
+        # Use file dialog to select save location
+        file_path = tk.filedialog.asksaveasfilename(
+            title="Save Node Path to File",
+            defaultextension=".json",
+            filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")]
+        )
+        if not file_path:
+            self.set_status("Save operation canceled.")
+            return
+
+        # Save to file
+        try:
+            with open(file_path, "w", encoding="utf-8") as f:
+                json.dump(path, f, indent=2)
+            self.set_status(f"Node path saved to {file_path}")
+        except Exception as e:
+            self.set_status(f"Error saving path: {e}")
 
     ######################
     # Right-Click Handler
@@ -354,8 +451,6 @@ class CitationExplorer(tk.Tk):
         Gathers the entire tree from self.citations_cache, organizes it into a structure
         with 'children', and writes to JSON file self.SAVE_FILE.
         """
-        # We want to find all root items in the tree, then recursively build a structure
-        # from the actual tree, not just from the cache. (Because the tree structure has parent-child relationships.)
         root_nodes = self.tree.get_children("")
         paper_list = []
         for root_node in root_nodes:
@@ -363,12 +458,22 @@ class CitationExplorer(tk.Tk):
             if paper_dict:
                 paper_list.append(paper_dict)
 
+        file_path = asksaveasfilename(
+            title="Save Tree State",
+            defaultextension=".json",
+            filetypes=[("JSON Files", "*.json"), ("All Files", "*.*")]
+        )
+        if not file_path:
+            self.set_status("Save operation canceled.")
+            return
+
         try:
-            with open(self.SAVE_FILE, "w", encoding="utf-8") as f:
+            with open(file_path, "w", encoding="utf-8") as f:
                 json.dump(paper_list, f, indent=2)
-            self.set_status(f"Saved tree to {self.SAVE_FILE}")
+            self.set_status(f"Tree state saved to {file_path}")
         except Exception as e:
             self.set_status(f"Error saving tree: {e}")
+
 
     def build_paper_recursive(self, item_id):
         """
@@ -378,24 +483,26 @@ class CitationExplorer(tk.Tk):
         link = self.tree.item(item_id, "text")
         title = self.tree.item(item_id, "values")[0]
         paper_key = (link, title)
-        paper = self.citations_cache.get(paper_key)
 
+        # Retrieve the paper from the cache
+        paper = self.citations_cache.get(paper_key)
         if not paper:
             return None
 
-        # We'll build a shallow copy
+        # Create a copy of the paper with all required fields
         result = {
-            "title": paper["title"],
-            "link": paper["link"],
-            "cited_by_link": paper["cited_by_link"],
-            "is_next_page": paper["is_next_page"],
-            "next_page_url": paper["next_page_url"],
-            "children": []
+            "title": paper.get("title", ""),
+            "link": paper.get("link", ""),
+            "cited_by_link": paper.get("cited_by_link"),
+            "is_next_page": paper.get("is_next_page", False),
+            "next_page_url": paper.get("next_page_url"),
+            "children": []  # Populate children recursively
         }
 
+        # Recursively build children
         child_ids = self.tree.get_children(item_id)
-        for cid in child_ids:
-            child_dict = self.build_paper_recursive(cid)
+        for child_id in child_ids:
+            child_dict = self.build_paper_recursive(child_id)
             if child_dict:
                 result["children"].append(child_dict)
 

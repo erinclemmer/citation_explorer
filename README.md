@@ -51,10 +51,6 @@ Getting Started
 *   **Selenium for Python**  
     Install Selenium via pip:
     
-    bash
-    
-    Copy code
-    
     `pip install selenium`
     
 *   **Tkinter**  
@@ -62,10 +58,6 @@ Getting Started
     
 
 ### 2\. Project Structure
-
-bash
-
-Copy code
 
 ```
 ├── CitationExplorer.py   # The main script (contains the Tkinter app) 
@@ -76,10 +68,6 @@ Copy code
 **`config.json`**  
 This file should contain a key `firefox_driver_path` which points to your GeckoDriver executable. Example:
 
-json
-
-Copy code
-
 `{   "firefox_driver_path": "/absolute/path/to/geckodriver" }`
 
 ### 3\. Usage
@@ -87,21 +75,13 @@ Copy code
 1.  **Clone or Download** this repository.
     
 2.  **Edit `config.json`** to provide the correct path to your GeckoDriver:
-    
-    json
-    
-    Copy code
-    
+   
     `{   "firefox_driver_path": "C:/Path/To/geckodriver.exe" }`
     
     _(On Windows, be sure to use either double backslashes `\\` or forward slashes `/`.)_
     
 3.  **Run the Application**:
-    
-    bash
-    
-    Copy code
-    
+ 
     `python CitationExplorer.py`
     
 4.  **Search for Articles**
@@ -153,12 +133,3 @@ Copy code
 ### 7\. Disclaimer
 
 Google Scholar has usage limitations, and scraping may violate Google Scholar’s Terms of Service. Use at your own discretion and for educational or personal use only.
-
-* * *
-
-License
--------
-
-This project is provided “as is” without warranty of any kind. You may use or modify it for your personal or research purposes.
-
-Enjoy exploring your citation networks!
